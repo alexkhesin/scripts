@@ -1,6 +1,8 @@
 import datetime
 import decimal
 import sys
+import getopt
+import os.path
 
 header1 = """  Transaction Detail
 Security Name:
@@ -50,6 +52,14 @@ Tax %
 © 2014 Morgan Stanley Smith Barney LLC. Member SIPC.
 """.split('\n')
 
+header2a = """Summary for Release
+Quantity Released:
+Total Release Cost Detailed Below:
+Quantity Withheld to Pay for Release:
+**Excess Amount:
+Net Quantity:
+""".split('\n')
+
 class SeekToHeader:
   def __init__(self, hdr):
     self._hdr = hdr
@@ -63,7 +73,7 @@ class SeekPastHeader:
 
   def next(self, line):
     if line != self._hdr[self._idx]:
-      raise Exception(str(self._idx) + ": [" + line + "] expected [" +
+      raise Exception("H" + str(self._idx) + ": [" + line + "] expected [" +
                       self._hdr[self._idx] + "]")
     self._idx += 1
     return self._idx < len(self._hdr)
@@ -97,6 +107,22 @@ fields2 = (('cusip', text), (None, ''), (None, ''), (None, ''), (None, ''),
            ('shares_withheld', number), (None, ''), (None, 'Tax Paid'),
            ('tax_fed', currency), ('tax_med', currency),
            ('tax_nys', currency), ('tax_nyc', currency))
+fields2a = (('shares', number), ('taxes', currency),
+            ('shares_withheld', number), ('excess', currency),
+            ('shares_net', number), (None, ''),
+            ('price', currency),
+            ('withheld_total', currency), (None, ''),
+            ('shares_withheld', number), (None, ''), (None, 'Tax Paid'),
+            ('tax_fed', currency), ('tax_med', currency),
+            ('tax_nys', currency), ('tax_nyc', currency))
+fields2b = (('price', currency),
+            ('withheld_total', currency), (None, ''),
+            ('shares_withheld', number), (None, ''), (None, 'Tax Paid'),
+            ('tax_fed', currency), ('tax_med', currency),
+            ('tax_nys', currency), ('tax_nyc', currency), (None, ''),
+            ('shares', number), ('taxes', currency),
+            ('shares_withheld', number), ('excess', currency),
+            ('shares_net', number))
 
 class Capture:
   def __init__(self, rec, fields):
@@ -108,7 +134,7 @@ class Capture:
     f = self._fields[self._idx]
     if not f[0]:
       if line != f[1]:
-        raise Exception(str(self._idx) + ": [" + line + "] expected [" +
+        raise Exception("C" + str(self._idx) + ": [" + line + "] expected [" +
                         f[1] + "]")
     else:
       new = f[1](line)
@@ -125,19 +151,44 @@ class Capture:
 class ConsumeRest:
   def next(self, line): return True
 
+alt = None
+post_split = True
+opts, args = getopt.getopt(sys.argv[1:],"abo")
+for opt, arg in opts:
+  if opt == '-a': alt = 'a'
+  if opt == '-b': alt = 'b'
+  if opt == '-o': post_split = False
+
 rec = {}
-seq = (SeekToHeader(header1), SeekPastHeader(header1), Capture(rec, fields1),
-       SeekToHeader(header2), SeekPastHeader(header2), Capture(rec, fields2),
-       ConsumeRest())
+
+if not alt:
+  seq = (SeekToHeader(header1), SeekPastHeader(header1),
+         Capture(rec, fields1),
+         SeekToHeader(header2), SeekPastHeader(header2),
+         Capture(rec, fields2),
+         ConsumeRest())
+else:
+  seq = (SeekToHeader(header1), SeekPastHeader(header1),
+         Capture(rec, fields1),
+         SeekToHeader(header2a), SeekPastHeader(header2a),
+         Capture(rec, fields2a if alt == 'a' else fields2b),
+         ConsumeRest())
+
 idx = 0
 curr = None
 
+i = 0
 for line in sys.stdin:
   if not curr:
     curr = seq[idx]
     idx += 1
-  if not curr.next(line.rstrip()):
-    curr = None
+  try:
+    if not curr.next(line.rstrip()):
+      curr = None
+  except:
+    print("Line ", i)
+    raise
+  i += 1
 if idx != len(seq):
   raise Exception("short")
 
@@ -151,48 +202,73 @@ if rec['taxes'] + rec['excess'] != rec['withheld_total']:
   raise Exception('witholdings do not add up')
 if rec['price'] * rec['shares_withheld'] != rec['withheld_total']:
   raise Exception('bad witholding total')
-if rec['ticker'] == 'GOOG':
-  if rec['cusip'] != 'CUSIP:  38259P706' or rec['name'] != 'GOOGLE INC CL C':
-    raise Exception('bad class C')
-elif (rec['ticker'] != 'GOOGL' or rec['cusip'] != 'CUSIP:  38259P508' or
-  rec['name'] != 'GOOGLE INC-CL A'):
+if post_split:
+  if rec['ticker'] == 'GOOG':
+    if rec['name'] != 'GOOGLE INC CL C':
+      raise Exception('bad class C')
+  elif (rec['ticker'] != 'GOOGL' or rec['name'] != 'GOOGLE INC-CL A'):
     raise Exception('bad class A')
+else:
+  if rec['ticker'] == 'GOOG':
+    if rec['name'] != 'GOOGLE INC-CL A':
+      raise Exception('bad presplit class A')
 if rec['shares'] * rec['price'] != rec['gross']:
   raise Exception('shares*price != gross')
 
-print('!Account')
-print('NGoogle RSU (GSU)')
-print('TInvst')
-print('^')
-print('!Type:Invst')
-
 date = rec['date'].strftime('%m/%d/%Y')
-print('D%s' % date)
-print('NBuy')
-print('YGoogle, Inc.')
-print('I%s' % rec['price'])
-print('Q%s' % rec['shares'])
-print('T%s' % rec['gross'])
-print('^')
-print('D%s' % date)
-print('NSell')
-print('YGoogle, Inc.')
-print('I%s' % rec['price'])
-print('Q%s' % rec['shares_withheld'])
-print('T%s' % rec['withheld_total'])
-print('^')
-print('D%s' % date)
-print('NCash')
-print('PGSU')
-print('T%s' % (rec['gross'] - rec['taxes']))
-print('SWages & Salary:Alex Gross Pay')
-print('$%s' % rec['gross'])
-print('STaxes:Alex Federal Income Tax')
-print('$-%s' % rec['tax_fed'])
-print('STaxes:Alex Medicare Tax')
-print('$-%s' % rec['tax_med'])
-print('STaxes:Alex NYS Income Tax')
-print('$-%s' % rec['tax_nys'])
-print('STaxes:Alex NYC Income Tax')
-print('$-%s' % rec['tax_nyc'])
-print('^')
+
+gsu = 'gsu.qif'
+cash = 'cash.qif'
+
+gsu_new = not os.path.exists(gsu)
+cash_new = not os.path.exists(cash)
+
+with open(gsu, 'a') as i:
+  with open(cash, 'a') as c:
+    if gsu_new:
+      i.write('!Account\n')
+      i.write('NGoogle GSU\n')
+      i.write('TInvst\n')
+      i.write('^\n')
+      i.write('!Type:Invst\n')
+
+    if cash_new:
+      c.write('!Account\n')
+      c.write('NGoogle GSU-Cash\n')
+      c.write('TCash\n')
+      c.write('^\n')
+      c.write('!Type:Cash\n')
+
+    i.write('D%s\n' % date)
+    i.write('NBuyX\n')
+    i.write('L[Google GSU-Cash]\n')
+    i.write('YGoogle, Inc.\n')
+    i.write('I%s\n' % rec['price'])
+    i.write('Q%s\n' % rec['shares'])
+    i.write('T%s\n' % rec['gross'])
+    i.write('^\n')
+    i.write('D%s\n' % date)
+    i.write('NSellX\n')
+    i.write('L[Google GSU-Cash]\n')
+    i.write('YGoogle, Inc.\n')
+    i.write('I%s\n' % rec['price'])
+    i.write('Q%s\n' % rec['shares_withheld'])
+    i.write('T%s\n' % rec['withheld_total'])
+    i.write('^\n')
+
+    c.write('D%s\n' % date)
+    c.write('NCash\n')
+    c.write('PGSU\n')
+    c.write('LWages & Salary:Alex Gross Pay\n')
+    c.write('T%s\n' % (rec['gross'] - rec['taxes']))
+    c.write('SWages & Salary:Alex Gross Pay\n')
+    c.write('$%s\n' % rec['gross'])
+    c.write('STaxes:Alex Federal Income Tax\n')
+    c.write('$-%s\n' % rec['tax_fed'])
+    c.write('STaxes:Alex Medicare Tax\n')
+    c.write('$-%s\n' % rec['tax_med'])
+    c.write('STaxes:Alex NYS Income Tax\n')
+    c.write('$-%s\n' % rec['tax_nys'])
+    c.write('STaxes:Alex NYC Income Tax\n')
+    c.write('$-%s\n' % rec['tax_nyc'])
+    c.write('^\n')
