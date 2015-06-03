@@ -20,6 +20,11 @@ def paren_currency(s):
   if s[0] != '(' or s[-1] != ')':
     raise Exception("Expected parentheses: [" + s + "]")
   return currency(s[1:-1])
+def tax(s):
+  # 1.4500 % $377.95
+  p = s.partition(' % ')
+  return (float(p[0]), currency(p[2]))
+
 
 fields = (
 'Release Detail Report',
@@ -62,8 +67,8 @@ fields = (
 ('Withheld Quantity Value: ', currency, 'withheld_total'), # $6,969.17
 'Tax Information',
 'Tax % Tax Paid',
-('Federal Tax 25.0000 % ', currency, 'tax_fed'), # $4,020.68
-('Medicare Tax 2.3500 % ', currency, 'tax_med'), # $377.95
+('Federal Tax ', tax, 'tax_fed_p'), # $4,020.68
+('Medicare Tax ', tax, 'tax_med_p'), # 1.4500 % $377.95
 ('State Tax 9.6200 % ', currency, 'tax_nys'), # $1,547.16
 ('Local1 Tax 4.2500 % ', currency, 'tax_nyc')) # $683.51
 
@@ -91,7 +96,14 @@ for line in sys.stdin:
         rec[f[2]] = new
   i += 1
 
+rec['tax_fed'] = rec['tax_fed_p'][1]
+rec['tax_med'] = rec['tax_med_p'][1]
+
 # consistency checks
+if not (rec['tax_fed_p'][0] in (25, 39.6)):
+  raise Exception('unexpected fed tax: %f' % rec['tax_fed_p'][0])
+if not (rec['tax_med_p'][0] in (1.45, 1.76, 2.35)):
+  raise Exception('unexpected med tax: %f' % rec['tax_med_p'][0])
 if (rec['tax_fed'] + rec['tax_med'] + rec['tax_nys'] + rec['tax_nyc'] !=
     rec['taxes']):
   raise Exception('taxes do not add up')
